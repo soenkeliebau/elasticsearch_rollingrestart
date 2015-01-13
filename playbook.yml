@@ -1,0 +1,50 @@
+---
+- hosts: all 
+  serial: 1
+  vars:
+    CLUSTER_STATUS_TIMEOUT: 600000000      
+    CLUSTER_STATUS_REQUEST: 'http://localhost:9200/_cluster/health?wait_for_status=green&timeout={{ CLUSTER_STATUS_TIMEOUT }}'
+    DISABLE_ALLOCATION_REQUEST:  '{"transient":{"cluster.routing.allocation.disable_allocation":"true", "cluster.routing.allocation.enable":"none"}}'
+    ENABLE_ALLOCATION_REQUEST: '{"transient":{"cluster.routing.allocation.disable_allocation":"false", "cluster.routing.allocation.enable":"all"}}'
+    
+  tasks:
+    - name: Ensure prerequisites are installed
+      yum: name={{ item }} state=present
+      with_items:
+        - python-httplib2
+    
+    - name: Disable allocation in elasticsearch
+      uri: url=http://localhost:9200/_cluster/settings return_content=yes method=PUT body='{{DISABLE_ALLOCATION_REQUEST}}'
+      register: disable_response 
+
+    - fail: msg=Cluster failed to acknowledge allocation disable request
+      when: "'{{disable_response.json.acknowledged}}' != 'True'" 
+
+    - fail: msg=Settings change did not take effect 
+      when: "'{{disable_response.json.transient.cluster.routing.allocation.enable}}' != 'none' or '{{disable_response.json.transient.cluster.routing.allocation.disable_allocation}}' != 'true'"
+
+    - name: Restart elasticsearch  
+      service: name=elasticsearch state=restarted
+
+    - name: Wait for elasticsearch to come back up 
+      wait_for: port=9200 delay=5 
+
+    - name: Enable allocation in elasticsearch
+      uri: url=http://localhost:9200/_cluster/settings return_content=yes method=PUT body='{{ENABLE_ALLOCATION_REQUEST}}'
+      register: enable_response 
+   
+    - fail: msg=Cluster failed to acknowledge allocation enable request
+      when: "'{{enable_response.json.acknowledged}}' != 'True'" 
+
+    - fail: msg=Settings change did not take effect 
+      when: "'{{enable_response.json.transient.cluster.routing.allocation.enable}}' != 'all' or '{{enable_response.json.transient.cluster.routing.allocation.disable_allocation}}' != 'false'"
+
+    - name: Wait for Cluster status green
+      uri: url="{{ CLUSTER_STATUS_REQUEST }}" timeout=10000000000
+      register: status_response
+
+    - fail: msg=Cluster failed to return to status green within defined time limit 
+      when: "'{{status_response.json.timed_out}}' != 'False'" 
+
+    - fail: msg=Cluster responded with status not equal green
+      when: "'{{status_response.json.status}}' != 'green'" 
